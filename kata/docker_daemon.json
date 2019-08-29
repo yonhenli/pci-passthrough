@@ -1,0 +1,22 @@
+{
+        "data-root": "/mnt/docker",
+        "default-runtime": "runc",
+        "runtimes": {
+                "kata-runtime": {
+                        "path": "/usr/local/bin/kata-runtime"
+                },
+                "runsc": {
+                        "path": "/usr/local/bin/runsc",
+                        "runtimeArgs":[
+                                "--gso=false"
+                        ]
+                },
+                "runsc-kvm": {
+                        "path": "/usr/local/bin/runsc",
+                        "runtimeArgs":[
+                                "--gso=false",
+                                "--platform=kvm"
+                        ]
+                }
+        }
+}

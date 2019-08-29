@@ -1,0 +1,189 @@
+diff --git a/.gitignore b/.gitignore
+index 3e4e55d..643e797 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1,3 +1,5 @@
+ kata-agent
+ kata-agent.service
+ coverage.txt
++cscope*
++tags
+diff --git a/Makefile b/Makefile
+index 6a331e7..a02c982 100644
+--- a/Makefile
++++ b/Makefile
+@@ -92,6 +92,11 @@ BUILDARGS += $(if $(ARCH), --build-arg arch=$(ARCH))
+ AGENT_IMAGE := katacontainers/agent-dev
+ AGENT_TAG := $(if $(COMMIT_NO_SHORT),$(COMMIT_NO_SHORT),dev)
+ 
++ifeq ($(osnet),static)
++	LDFLAGS := -extldflags '-static'
++	BUILDFLAGS := -buildmode=default
++endif
++
+ $(TARGET): $(GENERATED_FILES) $(SOURCES) $(VERSION_FILE)
+ 	go build $(BUILDFLAGS) -tags "$(BUILDTAGS)" -o $@ \
+ 		-ldflags "-X main.version=$(VERSION_COMMIT) -X main.seccompSupport=$(SECCOMP) $(LDFLAGS)"
+diff --git a/device.go b/device.go
+index 487cbd5..7c5448a 100644
+--- a/device.go
++++ b/device.go
+@@ -32,6 +32,9 @@ const (
+ 	driverNvdimmType    = "nvdimm"
+ 	driverEphemeralType = "ephemeral"
+ 	driverLocalType     = "local"
++
++        // OSNET
++        driverNfsType       = "nfs4"
+ )
+ 
+ const (
+diff --git a/grpc.go b/grpc.go
+index f12288c..9a455a5 100644
+--- a/grpc.go
++++ b/grpc.go
+@@ -635,6 +635,9 @@ func (a *agentGRPC) CreateContainer(ctx context.Context, req *pb.CreateContainer
+ 		return emptyResp, err
+ 	}
+ 
++        // OSNET
++        agentLog.Info("OSNET:CreateContainter:", mountList)
++
+ 	ctr := &container{
+ 		id:              req.ContainerId,
+ 		processes:       make(map[string]*process),
+@@ -1434,6 +1437,18 @@ func (a *agentGRPC) CreateSandbox(ctx context.Context, req *pb.CreateSandboxRequ
+ 		}
+ 	}
+ 
++        // OSNET HACKS and turns 9p to NFS
++        for _, storage := range req.Storages {
++                if storage.Driver == driver9pType {
++                        nfsStorage := storage
++                        nfsStorage.Driver = driverNfsType
++                        nfsStorage.Source = ":/mnt/oci"
++                        nfsStorage.Fstype = typeNfs
++                        nfsStorage.Options = []string{"addr=10.128.0.41"}
++                        agentLog.Info("OSNET:CreatSandbox:NfsStorage:", nfsStorage)
++                }
++        }
++
+ 	mountList, err := addStorages(ctx, req.Storages, a.sandbox)
+ 	if err != nil {
+ 		return emptyResp, err
+@@ -1441,6 +1456,9 @@ func (a *agentGRPC) CreateSandbox(ctx context.Context, req *pb.CreateSandboxRequ
+ 
+ 	a.sandbox.mounts = mountList
+ 
++        // OSNET HACKS and turns 9p to NFS
++        agentLog.Info("OSNET:CreateSandbox:addStorages:", mountList)
++
+ 	if err := setupDNS(a.sandbox.network.dns); err != nil {
+ 		return emptyResp, err
+ 	}
+diff --git a/mount.go b/mount.go
+index a2d962a..709e48d 100644
+--- a/mount.go
++++ b/mount.go
+@@ -29,6 +29,9 @@ const (
+ 	devPrefix      = "/dev/"
+ 	timeoutHotplug = 3
+ 	mountPerm      = os.FileMode(0755)
++
++        // OSNET
++	typeNfs       = "nfs4"
+ )
+ 
+ var flagList = map[string]int{
+@@ -101,7 +104,9 @@ func mount(source, destination, fsType string, flags int, options string) error
+ 
+ 	var err error
+ 	switch fsType {
+-	case type9pFs, typeVirtioFS:
++        // OSNET
++	//case type9pFs, typeVirtioFS:
++	case type9pFs, typeVirtioFS, typeNfs:
+ 		if err = createDestinationDir(destination); err != nil {
+ 			return err
+ 		}
+@@ -122,10 +127,16 @@ func mount(source, destination, fsType string, flags int, options string) error
+ 
+ 	if err = syscall.Mount(absSource, destination,
+ 		fsType, uintptr(flags), options); err != nil {
+-		return grpcStatus.Errorf(codes.Internal, "Could not mount %v to %v: %v",
+-			absSource, destination, err)
++                // OSNET
++		return grpcStatus.Errorf(codes.Internal, "Could not mount %v to %v: %v || %v %v %v",
++			absSource, destination, err, fsType, flags, options)
++		//return grpcStatus.Errorf(codes.Internal, "Could not mount %v to %v: %v",
++		//	absSource, destination, err)
+ 	}
+ 
++        // OSNET
++        agentLog.Info("OSNET mount:", absSource, destination)
++
+ 	return nil
+ }
+ 
+@@ -213,8 +224,17 @@ var storageHandlerList = map[string]storageHandler{
+ 	driverSCSIType:      virtioSCSIStorageHandler,
+ 	driverEphemeralType: ephemeralStorageHandler,
+ 	driverLocalType:     localStorageHandler,
++
++        // OSNET
++        driverNfsType:       nfsStorageHandler,
++}
++
++// nfsStorageHandler handles NFS
++func nfsStorageHandler(storage pb.Storage, s *sandbox) (string, error) {
++	return commonStorageHandler(storage)
+ }
+ 
++
+ func ephemeralStorageHandler(storage pb.Storage, s *sandbox) (string, error) {
+ 	s.Lock()
+ 	defer s.Unlock()
+@@ -325,6 +345,11 @@ func mountStorage(storage pb.Storage) error {
+ 		return err
+ 	}
+ 
++        // OSNET
++        agentLog.Info("OSNET storage:", storage)
++        agentLog.Info("OSNET flags:", flags)
++        agentLog.Info("OSNET options:", options)
++
+ 	return mount(storage.Source, storage.MountPoint, storage.Fstype, flags, options)
+ }
+ 
+diff --git a/osnet/Makefile b/osnet/Makefile
+new file mode 120000
+index 0000000..d0b0e8e
+--- /dev/null
++++ b/osnet/Makefile
+@@ -0,0 +1 @@
++../Makefile
+\ No newline at end of file
+diff --git a/osnet/device.go b/osnet/device.go
+new file mode 120000
+index 0000000..2bc082b
+--- /dev/null
++++ b/osnet/device.go
+@@ -0,0 +1 @@
++../device.go
+\ No newline at end of file
+diff --git a/osnet/grpc.go b/osnet/grpc.go
+new file mode 120000
+index 0000000..492f0ae
+--- /dev/null
++++ b/osnet/grpc.go
+@@ -0,0 +1 @@
++../grpc.go
+\ No newline at end of file
+diff --git a/osnet/mount.go b/osnet/mount.go
+new file mode 120000
+index 0000000..ac96c50
+--- /dev/null
++++ b/osnet/mount.go
+@@ -0,0 +1 @@
++../mount.go
+\ No newline at end of file

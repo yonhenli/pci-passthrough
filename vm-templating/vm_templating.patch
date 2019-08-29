@@ -1,0 +1,211 @@
+diff --git a/migration/migration.c b/migration/migration.c
+index 52a5092..fcd99ff 100644
+--- a/migration/migration.c
++++ b/migration/migration.c
+@@ -1509,6 +1509,21 @@ bool migrate_release_ram(void)
+     return s->enabled_capabilities[MIGRATION_CAPABILITY_RELEASE_RAM];
+ }
+ 
++// OSNET
++bool migrate_bypass_shared_memory(void)
++{
++    MigrationState *s;
++
++    /* it is not workable with postcopy yet. */
++    if (migrate_postcopy_ram()) {
++        return false;
++    }
++
++    s = migrate_get_current();
++
++    return s->enabled_capabilities[MIGRATION_CAPABILITY_BYPASS_SHARED_MEMORY];
++}
++
+ bool migrate_postcopy_ram(void)
+ {
+     MigrationState *s;
+diff --git a/migration/migration.h b/migration/migration.h
+index 8d2f320..6e572a4 100644
+--- a/migration/migration.h
++++ b/migration/migration.h
+@@ -206,6 +206,8 @@ MigrationState *migrate_get_current(void);
+ 
+ bool migrate_postcopy(void);
+ 
++// OSNET
++bool migrate_bypass_shared_memory(void);
+ bool migrate_release_ram(void);
+ bool migrate_postcopy_ram(void);
+ bool migrate_zero_blocks(void);
+diff --git a/migration/postcopy-ram.c b/migration/postcopy-ram.c
+index 4a0b33b..919d0e4 100644
+--- a/migration/postcopy-ram.c
++++ b/migration/postcopy-ram.c
+@@ -215,6 +215,13 @@ static int test_ramblock_postcopiable(const char *block_name, void *host_addr,
+     RAMBlock *rb = qemu_ram_block_by_name(block_name);
+     size_t pagesize = qemu_ram_pagesize(rb);
+ 
++    // OSNET
++    if (qemu_ram_is_shared(rb)) {
++        error_report("Postcopy on shared RAM (%s) is not yet supported",
++                     block_name);
++        return 1;
++    }
++
+     if (length % pagesize) {
+         error_report("Postcopy requires RAM blocks to be a page size multiple,"
+                      " block %s is 0x" RAM_ADDR_FMT " bytes with a "
+diff --git a/migration/ram.c b/migration/ram.c
+index 0e90efa..3bc5c45 100644
+--- a/migration/ram.c
++++ b/migration/ram.c
+@@ -780,6 +780,12 @@ unsigned long migration_bitmap_find_dirty(RAMState *rs, RAMBlock *rb,
+     unsigned long *bitmap = rb->bmap;
+     unsigned long next;
+ 
++    // OSNET
++    /* bypassing this ramblock */
++    if (!bitmap) {
++        return size;
++    }
++
+     if (rs->ram_bulk_stage && start > 0) {
+         next = start + 1;
+     } else {
+@@ -850,7 +856,11 @@ static void migration_bitmap_sync(RAMState *rs)
+     qemu_mutex_lock(&rs->bitmap_mutex);
+     rcu_read_lock();
+     RAMBLOCK_FOREACH(block) {
+-        migration_bitmap_sync_range(rs, block, 0, block->used_length);
++        // OSNET
++        //migration_bitmap_sync_range(rs, block, 0, block->used_length);
++        if (!migrate_bypass_shared_memory() || !qemu_ram_is_shared(block)) {
++            migration_bitmap_sync_range(rs, block, 0, block->used_length);
++        }
+     }
+     rcu_read_unlock();
+     qemu_mutex_unlock(&rs->bitmap_mutex);
+@@ -2136,14 +2146,17 @@ static int ram_state_init(RAMState **rsp)
+      * Count the total number of pages used by ram blocks not including any
+      * gaps due to alignment or unplugs.
+      */
+-    (*rsp)->migration_dirty_pages = ram_bytes_total() >> TARGET_PAGE_BITS;
++    // OSNET
++    //(*rsp)->migration_dirty_pages = ram_bytes_total() >> TARGET_PAGE_BITS;
+ 
+     ram_state_reset(*rsp);
+ 
+     return 0;
+ }
+ 
+-static void ram_list_init_bitmaps(void)
++// OSNET
++//static void ram_list_init_bitmaps(void)
++static void ram_list_init_bitmaps(RAMState *rs)
+ {
+     RAMBlock *block;
+     unsigned long pages;
+@@ -2151,9 +2164,21 @@ static void ram_list_init_bitmaps(void)
+     /* Skip setting bitmap if there is no RAM */
+     if (ram_bytes_total()) {
+         QLIST_FOREACH_RCU(block, &ram_list.blocks, next) {
++            // OSNET
++            if (migrate_bypass_shared_memory() && qemu_ram_is_shared(block)) {
++                continue;
++            }
+             pages = block->max_length >> TARGET_PAGE_BITS;
+             block->bmap = bitmap_new(pages);
+             bitmap_set(block->bmap, 0, pages);
++
++            /*
++             * OSNET
++             * Count the total number of pages used by ram blocks not
++             * including any gaps due to alignments or unplugs.
++             */
++            rs->migration_dirty_pages += pages;
++
+             if (migrate_postcopy_ram()) {
+                 block->unsentmap = bitmap_new(pages);
+                 bitmap_set(block->unsentmap, 0, pages);
+@@ -2169,7 +2194,9 @@ static void ram_init_bitmaps(RAMState *rs)
+     qemu_mutex_lock_ramlist();
+     rcu_read_lock();
+ 
+-    ram_list_init_bitmaps();
++    // OSNET
++    //ram_list_init_bitmaps();
++    ram_list_init_bitmaps(rs);
+     memory_global_dirty_log_start();
+     migration_bitmap_sync(rs);
+ 
+diff --git a/osnet/migration.c b/osnet/migration.c
+new file mode 120000
+index 0000000..ead630f
+--- /dev/null
++++ b/osnet/migration.c
+@@ -0,0 +1 @@
++../migration/migration.c
+\ No newline at end of file
+diff --git a/osnet/migration.h b/osnet/migration.h
+new file mode 120000
+index 0000000..e01d4c1
+--- /dev/null
++++ b/osnet/migration.h
+@@ -0,0 +1 @@
++../migration/migration.h
+\ No newline at end of file
+diff --git a/osnet/migration.json b/osnet/migration.json
+new file mode 120000
+index 0000000..70b1a53
+--- /dev/null
++++ b/osnet/migration.json
+@@ -0,0 +1 @@
++../qapi/migration.json
+\ No newline at end of file
+diff --git a/osnet/postcopy-ram.c b/osnet/postcopy-ram.c
+new file mode 120000
+index 0000000..b70f894
+--- /dev/null
++++ b/osnet/postcopy-ram.c
+@@ -0,0 +1 @@
++../migration/postcopy-ram.c
+\ No newline at end of file
+diff --git a/osnet/ram.c b/osnet/ram.c
+new file mode 120000
+index 0000000..4e481ec
+--- /dev/null
++++ b/osnet/ram.c
+@@ -0,0 +1 @@
++../migration/ram.c
+\ No newline at end of file
+diff --git a/qapi/migration.json b/qapi/migration.json
+index 9d0bf82..89c5fdb 100644
+--- a/qapi/migration.json
++++ b/qapi/migration.json
+@@ -357,13 +357,17 @@
+ # @dirty-bitmaps: If enabled, QEMU will migrate named dirty bitmaps.
+ #                 (since 2.12)
+ #
++# @bypass-shared-memory: the shared memory region will be bypassed on migration.
++#          This feature allows the memory region to be resued by new qemu(s)
++#          or be migrated separately. (since 2.12)
++#
+ # Since: 1.2
+ ##
+ { 'enum': 'MigrationCapability',
+   'data': ['xbzrle', 'rdma-pin-all', 'auto-converge', 'zero-blocks',
+            'compress', 'events', 'postcopy-ram', 'x-colo', 'release-ram',
+            'block', 'return-path', 'pause-before-switchover', 'x-multifd',
+-           'dirty-bitmaps' ] }
++           'dirty-bitmaps', 'bypass-shared-memory'] }
+ 
+ ##
+ # @MigrationCapabilityStatus:
+@@ -418,6 +422,7 @@
+ #       {"state": true, "capability": "events"},
+ #       {"state": false, "capability": "postcopy-ram"},
+ #       {"state": false, "capability": "x-colo"}
++#       {"state": false, "capability": "bypass-shared-memory"}
+ #    ]}
+ #
+ ##

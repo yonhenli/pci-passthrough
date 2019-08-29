@@ -1,0 +1,396 @@
+diff --git a/.gitignore b/.gitignore
+index 09ade1d..18b8f71 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -19,3 +19,5 @@
+ /virtcontainers/shim/mock/kata-shim/kata-shim
+ /virtcontainers/shim/mock/shim
+ /virtcontainers/utils/supportfiles
++cscope*
++tags
+diff --git a/cli/run.go b/cli/run.go
+index 6125224..e7b1cc9 100644
+--- a/cli/run.go
++++ b/cli/run.go
+@@ -58,6 +58,12 @@ var runCLICommand = cli.Command{
+ 			Name:  "no-pivot",
+ 			Usage: "warning: this flag is meaningless to kata-runtime, just defined in order to be compatible with docker in ramdisk",
+ 		},
++                // OSNET
++                cli.IntFlag{
++			Name:  "migrate",
++                        Value: 0,
++			Usage: "Start the VM in the migration-listen mode on the TCP port (-incoming tcp:0:port).",
++		},
+ 	},
+ 	Action: func(context *cli.Context) error {
+ 		ctx, err := cliContextToContext(context)
+@@ -70,14 +76,29 @@ var runCLICommand = cli.Command{
+ 			return errors.New("invalid runtime config")
+ 		}
+ 
+-		return run(ctx, context.Args().First(),
+-			context.String("bundle"),
+-			context.String("console"),
+-			context.String("console-socket"),
+-			context.String("pid-file"),
+-			context.Bool("detach"),
+-			context.Bool("systemd-cgroup"),
+-			runtimeConfig)
++                // OSNET
++                if context.Int("migrate") > 0 {
++		        return migrate(ctx,
++                                       context.Args().First(),
++			               context.String("bundle"),
++                                       context.String("console"),
++                                       context.String("console-socket"),
++                                       context.String("pid-file"),
++                                       context.Bool("detach"),
++                                       context.Bool("systemd-cgroup"),
++                                       runtimeConfig,
++                                       context.Int("migrate"))
++
++                } else {
++		        return run(ctx, context.Args().First(),
++			           context.String("bundle"),
++			           context.String("console"),
++                                   context.String("console-socket"),
++                                   context.String("pid-file"),
++                                   context.Bool("detach"),
++                                   context.Bool("systemd-cgroup"),
++                                   runtimeConfig)
++                }
+ 	},
+ }
+ 
+@@ -127,3 +148,13 @@ func run(ctx context.Context, containerID, bundle, console, consoleSocket, pidFi
+ 	//runtime should forward container exit code to the system
+ 	return cli.NewExitError("", ps.Sys().(syscall.WaitStatus).ExitStatus())
+ }
++
++// OSNET
++func migrate(ctx context.Context, containerID, bundle, console, consoleSocket, pidFile string, detach, systemdCgroup bool,
++	     runtimeConfig oci.RuntimeConfig, mport int) error {
++        fmt.Printf("migration starts\n");
++        runtimeConfig.HypervisorConfig.MigrationPort = mport;
++        fmt.Printf("HypervisorConfig: %v\n", runtimeConfig.HypervisorConfig);
++
++        return run(ctx, containerID, bundle, console, consoleSocket, pidFile , detach, systemdCgroup, runtimeConfig)
++}
+diff --git a/osnet/call.go b/osnet/call.go
+new file mode 120000
+index 0000000..bc9e63f
+--- /dev/null
++++ b/osnet/call.go
+@@ -0,0 +1 @@
++../vendor/google.golang.org/grpc/call.go
+\ No newline at end of file
+diff --git a/osnet/govmm_qemu.go b/osnet/govmm_qemu.go
+new file mode 120000
+index 0000000..6a1bc68
+--- /dev/null
++++ b/osnet/govmm_qemu.go
+@@ -0,0 +1 @@
++../vendor/github.com/intel/govmm/qemu/qemu.go
+\ No newline at end of file
+diff --git a/osnet/hypervisor.go b/osnet/hypervisor.go
+new file mode 120000
+index 0000000..bb9c199
+--- /dev/null
++++ b/osnet/hypervisor.go
+@@ -0,0 +1 @@
++../virtcontainers/hypervisor.go
+\ No newline at end of file
+diff --git a/osnet/kata_agent.go b/osnet/kata_agent.go
+new file mode 120000
+index 0000000..cacbe8b
+--- /dev/null
++++ b/osnet/kata_agent.go
+@@ -0,0 +1 @@
++../virtcontainers/kata_agent.go
+\ No newline at end of file
+diff --git a/osnet/run.go b/osnet/run.go
+new file mode 120000
+index 0000000..1cc68e9
+--- /dev/null
++++ b/osnet/run.go
+@@ -0,0 +1 @@
++../cli/run.go
+\ No newline at end of file
+diff --git a/osnet/vc_qemu.go b/osnet/vc_qemu.go
+new file mode 120000
+index 0000000..e65f385
+--- /dev/null
++++ b/osnet/vc_qemu.go
+@@ -0,0 +1 @@
++../virtcontainers/qemu.go
+\ No newline at end of file
+diff --git a/osnet/vc_sandbox.go b/osnet/vc_sandbox.go
+new file mode 120000
+index 0000000..0e72459
+--- /dev/null
++++ b/osnet/vc_sandbox.go
+@@ -0,0 +1 @@
++../virtcontainers/sandbox.go
+\ No newline at end of file
+diff --git a/osnet/vc_types_sandbox.go b/osnet/vc_types_sandbox.go
+new file mode 120000
+index 0000000..11a0e8e
+--- /dev/null
++++ b/osnet/vc_types_sandbox.go
+@@ -0,0 +1 @@
++../virtcontainers/types/sandbox.go
+\ No newline at end of file
+diff --git a/vendor/github.com/intel/govmm/qemu/qemu.go b/vendor/github.com/intel/govmm/qemu/qemu.go
+index f281d4e..ddd6cac 100644
+--- a/vendor/github.com/intel/govmm/qemu/qemu.go
++++ b/vendor/github.com/intel/govmm/qemu/qemu.go
+@@ -1399,6 +1399,10 @@ const (
+ 	MigrationExec = 2
+ 	// MigrationDefer is the defer incoming type
+ 	MigrationDefer = 3
++
++        // OSNET
++        // MigrationTCP is to prepare the host for incoming migration by listening to a given TCP port.
++        MigrationTCP = 4
+ )
+ 
+ // Incoming controls migration source preparation
+@@ -1409,6 +1413,10 @@ type Incoming struct {
+ 	FD *os.File
+ 	// Only valid if MigrationType == MigrationExec
+ 	Exec string
++
++        // OSNET
++        // Only valid if MigrationType == MigrationTCP
++        Port int
+ }
+ 
+ // Config is the qemu configuration structure.
+@@ -1783,6 +1791,8 @@ func (config *Config) appendIncoming() {
+ 		uri = fmt.Sprintf("fd:%d", chFDs[0])
+ 	case MigrationDefer:
+ 		uri = "defer"
++	case MigrationTCP:
++		uri = fmt.Sprintf("tcp:0:%d", config.Incoming.Port)
+ 	default:
+ 		return
+ 	}
+@@ -1796,6 +1806,34 @@ func (config *Config) appendPidFile() {
+ 	}
+ }
+ 
++// OSNET
++func (config *Config) appendTelnetServer() {
++        host := "127.0.0.1"
++        port := 8888
++        opt := "server,nowait"
++        telnet := fmt.Sprintf("telnet:%s:%d,%s", host, port, opt);
++        config.qemuParams = append(config.qemuParams, "-serial", telnet)
++}
++
++func (config *Config) appendVirtualDisk() {
++        img := "/shared/vm-images/r2d2.qcow2"
++        opt := "if=virtio"
++        vdisk := fmt.Sprintf("file=%s,%s", img, opt);
++        config.qemuParams = append(config.qemuParams, "-drive", vdisk)
++}
++
++func (config *Config) appendNetworkDevice() {
++        dev := "tap"
++        devOpt := "ifname=qtap0,id=net0,script=no,downscript=no,vhost=on"
++        netDev := fmt.Sprintf("%s,%s", dev, devOpt);
++        config.qemuParams = append(config.qemuParams, "-netdev", netDev);
++
++        virtio := "virtio-net"
++        virtioOpt := "netdev=net0"
++        virtioDev := fmt.Sprintf("%s,%s", virtio, virtioOpt);
++        config.qemuParams = append(config.qemuParams, "-device", virtioDev);
++}
++
+ // LaunchQemu can be used to launch a new qemu instance.
+ //
+ // The Config parameter contains a set of qemu parameters and settings.
+@@ -1817,12 +1855,17 @@ func LaunchQemu(config Config, logger QMPLog) (string, error) {
+ 	config.appendGlobalParam()
+ 	config.appendVGA()
+ 	config.appendKnobs()
+-	config.appendKernel()
++	//config.appendKernel()
+ 	config.appendBios()
+ 	config.appendIOThreads()
+ 	config.appendIncoming()
+ 	config.appendPidFile()
+ 
++        // OSNET
++        config.appendTelnetServer()
++        config.appendVirtualDisk()
++        config.appendNetworkDevice()
++
+ 	if err := config.appendCPUs(); err != nil {
+ 		return "", err
+ 	}
+diff --git a/vendor/google.golang.org/grpc/call.go b/vendor/google.golang.org/grpc/call.go
+index f73b7d5..3257595 100644
+--- a/vendor/google.golang.org/grpc/call.go
++++ b/vendor/google.golang.org/grpc/call.go
+@@ -20,6 +20,8 @@ package grpc
+ 
+ import (
+ 	"golang.org/x/net/context"
++        // OSNET
++        "fmt"
+ )
+ 
+ // Invoke sends the RPC request on the wire and returns after response is
+@@ -69,6 +71,8 @@ func invoke(ctx context.Context, method string, req, reply interface{}, cc *Clie
+ 	for {
+ 		csInt, err := newClientStream(ctx, unaryStreamDesc, cc, method, opts...)
+ 		if err != nil {
++                        // OSNET
++                        fmt.Printf("newClientStream: %v\n", err);
+ 			return err
+ 		}
+ 		cs := csInt.(*clientStream)
+@@ -78,6 +82,8 @@ func invoke(ctx context.Context, method string, req, reply interface{}, cc *Clie
+ 				firstAttempt = false
+ 				continue
+ 			}
++                        // OSNET
++                        fmt.Printf("cs.SendMsg: %v\n", err);
+ 			return err
+ 		}
+ 		if err := cs.RecvMsg(reply); err != nil {
+@@ -86,7 +92,10 @@ func invoke(ctx context.Context, method string, req, reply interface{}, cc *Clie
+ 				firstAttempt = false
+ 				continue
+ 			}
+-			return err
++                        // OSNET
++                        fmt.Printf("cs.RecvMsg: %v\n", err)
++			return nil
++			//return err
+ 		}
+ 		return nil
+ 	}
+diff --git a/virtcontainers/hypervisor.go b/virtcontainers/hypervisor.go
+index 9ad51ff..97812c4 100644
+--- a/virtcontainers/hypervisor.go
++++ b/virtcontainers/hypervisor.go
+@@ -314,6 +314,10 @@ type HypervisorConfig struct {
+ 	// VMid is the id of the VM that create the hypervisor if the VM is created by the factory.
+ 	// VMid is "" if the hypervisor is not created by the factory.
+ 	VMid string
++
++        // OSNET
++        // Hypervisor listens to the port for the incoming migration.
++        MigrationPort int
+ }
+ 
+ // vcpu mapping from vcpu number to thread number
+diff --git a/virtcontainers/kata_agent.go b/virtcontainers/kata_agent.go
+index 61e739d..b0d759a 100644
+--- a/virtcontainers/kata_agent.go
++++ b/virtcontainers/kata_agent.go
+@@ -720,10 +720,15 @@ func (k *kataAgent) startSandbox(sandbox *Sandbox) error {
+ 		hostname = hostname[:maxHostnameLen]
+ 	}
+ 
+-	// check grpc server is serving
+-	if err = k.check(); err != nil {
+-		return err
+-	}
++        // OSNET
++        if sandbox.config.HypervisorConfig.MigrationPort > 0 {
++                k.Logger().WithField("migration-port", sandbox.config.HypervisorConfig.MigrationPort).Info("Migation")
++        } else {
++                // check grpc server is serving
++                if err = k.check(); err != nil {
++                        return err
++                }
++        }
+ 
+ 	//
+ 	// Setup network interfaces and routes
+diff --git a/virtcontainers/qemu.go b/virtcontainers/qemu.go
+index 99ee8e1..942ce1a 100644
+--- a/virtcontainers/qemu.go
++++ b/virtcontainers/qemu.go
+@@ -428,6 +428,16 @@ func (q *qemu) setupTemplate(knobs *govmmQemu.Knobs, memory *govmmQemu.Memory) g
+ 	return incoming
+ }
+ 
++// OSNET
++func (q *qemu) setupIncomingTCP() govmmQemu.Incoming {
++        incoming := govmmQemu.Incoming{}
++
++        incoming.MigrationType = govmmQemu.MigrationTCP
++        incoming.Port = q.config.MigrationPort
++
++        return incoming
++}
++
+ func (q *qemu) setupFileBackedMem(knobs *govmmQemu.Knobs, memory *govmmQemu.Memory) {
+ 	var target string
+ 	if q.config.FileBackedMemRootDir != "" {
+@@ -496,7 +506,13 @@ func (q *qemu) createSandbox(ctx context.Context, id string, hypervisorConfig *H
+ 		Params:     q.kernelParameters(),
+ 	}
+ 
+-	incoming := q.setupTemplate(&knobs, &memory)
++        // OSNET
++        incoming := govmmQemu.Incoming{}
++        if hypervisorConfig.MigrationPort > 0 {
++                incoming = q.setupIncomingTCP()
++        } else {
++                incoming = q.setupTemplate(&knobs, &memory)
++        }
+ 
+ 	// With the current implementations, VM templating will not work with file
+ 	// based memory (stand-alone) or virtiofs. This is because VM templating
+diff --git a/virtcontainers/sandbox.go b/virtcontainers/sandbox.go
+index 8be04e9..d703889 100644
+--- a/virtcontainers/sandbox.go
++++ b/virtcontainers/sandbox.go
+@@ -40,6 +40,11 @@ const (
+ 	// vmStartTimeout represents the time in seconds a sandbox can wait before
+ 	// to consider the VM starting operation failed.
+ 	vmStartTimeout = 10
++
++        // OSNET
++        // vmMigrationTimeout represents the time in seconds a sandbox waits for
++        // the incoming migration
++        vmMigrationTimeout = 60
+ )
+ 
+ // SandboxStatus describes a sandbox status.
+@@ -976,7 +981,13 @@ func (s *Sandbox) startVM() (err error) {
+ 			return vm.assignSandbox(s)
+ 		}
+ 
+-		return s.hypervisor.startSandbox(vmStartTimeout)
++                // OSNET
++                timeout := vmStartTimeout
++                if s.config.HypervisorConfig.MigrationPort > 0 {
++                        timeout = vmMigrationTimeout
++                }
++
++                return s.hypervisor.startSandbox(timeout)
+ 	}); err != nil {
+ 		return err
+ 	}
+diff --git a/virtcontainers/types/sandbox.go b/virtcontainers/types/sandbox.go
+index 2259e86..0c42dac 100644
+--- a/virtcontainers/types/sandbox.go
++++ b/virtcontainers/types/sandbox.go
+@@ -98,8 +98,9 @@ func (state *StateString) validTransition(oldState StateString, newState StateSt
+ 		}
+ 	}
+ 
++        // OSNET
+ 	return fmt.Errorf("Can not move from %v to %v",
+-		state, newState)
++		*state, newState)
+ }
+ 
+ // Volume is a shared volume between the host and the VM,

@@ -1,0 +1,11 @@
+[Unit]
+Description=Kata Container Agent
+Requires=networking.service nfs-client.target
+After=networking.service nfs-client.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/kata-agent
+
+[Install]
+WantedBy=multi-user.target
